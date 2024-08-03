@@ -34,8 +34,8 @@ type ResponseData struct {
 }
 
 const (
-	numWorkers = 10
-	resolution = 11
+	numWorkers = 8
+	resolution = 10
 	compact    = true
 )
 
@@ -58,87 +58,88 @@ func TestPlzH3Index(t *testing.T) {
 	}
 
 	client := &http.Client{}
-	durations := make([]time.Duration, len(geojson.Features))
 	results := make(chan result, len(geojson.Features))
-	semaphore := make(chan struct{}, numWorkers)
 
+	// Split features into chunks
+	features := geojson.Features
+	chunkSize := (len(features) + numWorkers - 1) / numWorkers // Ceiling division
 	var wg sync.WaitGroup
-	for i, feature := range geojson.Features {
+
+	for i := 0; i < numWorkers; i++ {
+		start := i * chunkSize
+		end := start + chunkSize
+		if end > len(features) {
+			end = len(features)
+		}
+
 		wg.Add(1)
-		go func(i int, feature GeoJSONFeature) {
+		go func(featuresChunk []GeoJSONFeature) {
 			defer wg.Done()
-			semaphore <- struct{}{} // Acquire a token to proceed
 
-			// Prepare request body
-			requestBody := map[string]interface{}{
-				"compact":    compact,
-				"resolution": resolution,
-				"geometries": []typings.GeoJSONGeometry{feature.Geometry},
-			}
-
-			requestBodyJSON, err := json.Marshal(requestBody)
-			if err != nil {
-				results <- result{err: err}
-				<-semaphore // Release the token
-				return
-			}
-
-			req, err := http.NewRequest("POST", "http://localhost:5005/create-index", bytes.NewBuffer(requestBodyJSON))
-			if err != nil {
-				results <- result{err: err}
-				<-semaphore // Release the token
-				return
-			}
-			req.Header.Set("Content-Type", "application/json")
-
-			// Send request and measure duration
-			start := time.Now()
-			resp, err := client.Do(req)
-			duration := time.Since(start)
-
-			if err != nil {
-				results <- result{err: err}
-				<-semaphore // Release the token
-				return
-			}
-			defer resp.Body.Close()
-
-			// Record duration
-			durations[i] = duration
-
-			// Read and parse response
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				results <- result{err: err}
-				<-semaphore // Release the token
-				return
-			}
-
-			var responseData ResponseData
-			if err := json.Unmarshal(respBody, &responseData); err != nil {
-				results <- result{err: err}
-				<-semaphore // Release the token
-				return
-			}
-
-			// Check if the response is successful
-			if resp.StatusCode == http.StatusOK {
-				// Check if there are h3 indices in the result
-				h3Count := 0
-				for _, res := range responseData.Result {
-					h3Count += len(res.H3Indices)
+			// Process each feature in the chunk
+			for _, feature := range featuresChunk {
+				// Prepare request body
+				requestBody := map[string]interface{}{
+					"compact":    compact,
+					"resolution": resolution,
+					"geometries": []typings.GeoJSONGeometry{feature.Geometry},
 				}
 
-				if h3Count > 0 {
-					results <- result{success: true}
+				requestBodyJSON, err := json.Marshal(requestBody)
+				if err != nil {
+					results <- result{err: err}
+					continue
+				}
+
+				req, err := http.NewRequest("POST", "http://localhost:5005/create-index", bytes.NewBuffer(requestBodyJSON))
+				if err != nil {
+					results <- result{err: err}
+					continue
+				}
+				req.Header.Set("Content-Type", "application/json")
+
+				// Send request and measure duration
+				startTime := time.Now()
+				resp, err := client.Do(req)
+				duration := time.Since(startTime)
+
+				if err != nil {
+					results <- result{err: err, duration: duration}
+					continue
+				}
+				defer resp.Body.Close()
+
+				// Read and parse response
+				respBody, err := io.ReadAll(resp.Body)
+				if err != nil {
+					results <- result{err: err, duration: duration}
+					continue
+				}
+
+				var responseData ResponseData
+				if err := json.Unmarshal(respBody, &responseData); err != nil {
+					results <- result{err: err, duration: duration}
+					continue
+				}
+
+				// Check if the response is successful
+				if resp.StatusCode == http.StatusOK {
+					// Check if there are h3 indices in the result
+					h3Count := 0
+					for _, res := range responseData.Result {
+						h3Count += len(res.H3Indices)
+					}
+
+					if h3Count > 0 {
+						results <- result{success: true, duration: duration}
+					} else {
+						results <- result{err: fmt.Errorf("no H3 indices returned for geometry: %v", feature.Geometry), duration: duration}
+					}
 				} else {
-					results <- result{err: fmt.Errorf("no H3 indices returned for geometry: %v", feature.Geometry)}
+					results <- result{err: fmt.Errorf("unexpected status code: %v, response body: %s", resp.StatusCode, respBody), duration: duration}
 				}
-			} else {
-				results <- result{err: fmt.Errorf("unexpected status code: %v, response body: %s", resp.StatusCode, respBody)}
 			}
-			<-semaphore // Release the token
-		}(i, feature)
+		}(features[start:end])
 	}
 
 	// Wait for all workers to finish

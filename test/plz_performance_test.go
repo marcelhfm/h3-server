@@ -180,6 +180,7 @@ func TestPlzH3Index(t *testing.T) {
 		t.Logf("Max Duration: %v", maxDuration)
 		t.Logf("Median Duration: %v", medianDuration)
 		t.Logf("Average Duration: %v", avgDuration)
+		t.Logf("Total Duration: %v", totalDuration)
 	} else {
 		t.Logf("No successful requests to report durations.")
 	}

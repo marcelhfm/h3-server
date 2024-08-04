@@ -64,15 +64,40 @@ func CreateIndexHandler() http.HandlerFunc {
 				cell := h3.LatLngToCell(latLng, h3Request.Resolution)
 
 				cells = append(cells, cell)
-			} else if geometry.Type == "Polygon" || geometry.Type == "MultiPolygon" {
+			} else if geometry.Type == "Polygon" {
 				geoPolygon, err := utils.GeoJsonToH3GeoPolygon(geometry)
 				if err != nil {
 					l.Log.Error().Msgf("Error while creating geopolygon: %v", err)
 					http.Error(w, "Error while creating geopolygon", http.StatusInternalServerError)
+					return
 				}
 
 				polyCells := h3.PolygonToCells(geoPolygon, h3Request.Resolution)
 				cells = append(cells, polyCells...)
+			} else if geometry.Type == "MultiPolygon" {
+				multiPolygonCoords, ok := geometry.Coordinates.([]interface{})
+				if !ok {
+					l.Log.Error().Msg("Invalid MultiPolygon coordinates format")
+					http.Error(w, "Invalid MultiPolygon coordinates format", http.StatusBadRequest)
+					return
+				}
+
+				for _, polygonCoords := range multiPolygonCoords {
+					polygonGeom := typings.GeoJSONGeometry{
+						Type:        "Polygon",
+						Coordinates: polygonCoords,
+					}
+
+					geoPolygon, err := utils.GeoJsonToH3GeoPolygon(polygonGeom)
+					if err != nil {
+						l.Log.Error().Msgf("Error while creating geopolygon: %v", err)
+						http.Error(w, "Error while creating geopolygon", http.StatusInternalServerError)
+						return
+					}
+
+					polyCells := h3.PolygonToCells(geoPolygon, h3Request.Resolution)
+					cells = append(cells, polyCells...)
+				}
 			}
 
 			results = append(results, GeometryH3Obj{Geometry: geometry, H3Indices: cells})

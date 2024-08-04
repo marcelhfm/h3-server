@@ -35,7 +35,7 @@ type ResponseData struct {
 
 const (
 	numWorkers = 8
-	resolution = 10
+	resolution = 11
 	compact    = true
 )
 
